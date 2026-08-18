@@ -6,17 +6,12 @@ import time
 from numba import jit
 import os
 import numpy as np
-import subprocess
-from skimage import measure
-import pyvista as pv
 import sys
 import multiprocessing
-import matplotlib.pyplot as plt
 import sparse
 
 ###
 import numpy as np
-import matplotlib.pyplot as plt
 from rich import print
 from rich.progress import track
 from rich.console import Console
@@ -605,7 +600,6 @@ def clear_outliers_matrix(grid_temperature2 , bounding_box , global_bb , step_bo
     return grid_temperature
 
 
-import cv2
 from scipy import ndimage
 my_erosion = ndimage.binary_erosion
 my_closing = ndimage.binary_closing
@@ -636,7 +630,6 @@ def circular_kernel(n):
 #%%
 
 
-import nibabel as nib
 
 def get_mesh_strand(selected_strand  ):
     print("loading mesh strand " , selected_strand)
