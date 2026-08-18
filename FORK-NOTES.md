@@ -28,24 +28,41 @@ resist restructuring — in particular the memory behaviour described below is w
 |---|---|---|
 | `bb1b6d0` | `sample_spherical`: `int()` the point count, use `standard_normal((n, ndim))` | `np.random.randn(n, ndim)` is unsupported inside `@jit(nopython=True)` and fails on a float count. **This patch built cross45 and cross90** and was previously uncommitted. |
 | `75c3f30` | `check_meshes`: remove `missing_strands.append(i)` from the pool worker | `missing_strands` is a local of `main()`, so the worker raised `NameError` on the first absent mesh — making `-substep mesh -run_case missing` unusable on any un-meshed run. The value was already returned and collected by the caller. |
+| `565bf0b` | drop six unused imports from `meta_grid` | `subprocess`, `skimage.measure`, `pyvista`, `matplotlib.pyplot` (x2), `cv2`, `nibabel` -- zero live uses. Measured 245 -> 160 MB and 1.14 -> 0.82 s per import, i.e. ~3 GB across the 36 workers the growth step spawns. |
+| `509a321` | `handle_temperature`: membership test instead of `try/except` | **Ends the growth-step memory leak.** Every new dict key raised `KeyError` inside `@jit(nopython=True)`, and numba does not free memory on the exception unwind path -- 80.2 bytes per raise, measured. Peak RSS on a real cross90 strand **15.345 -> 1.887 GB**, output bit-identical to the substrate on disk. Also applied to the unused `handle_temperature_new`, which carries the same pattern. |
 | `5597078` | `np.atleast_1d` around four `np.loadtxt` calls | `np.loadtxt` yields a 0-d array for a one-line file, so any resume that came down to a single outstanding strand died with `TypeError: iteration over a 0-d array`. Affects both `meta_grid` and `bake_mesh_pickle`. |
 
 ## Known upstream behaviour NOT changed here
 
-**`grow -substep growth` leaks memory without bound.** Measured on cross45: ~400 GB consumed per 14
-minutes of work, spread over ~40 spawned workers at ~21 GB each; `n_cores` does not control the worker
-count. When memory runs out the pool does not crash, it **wedges** — the original cross45 attempt sat at
-strand 386 holding 129 GB in the parent having burned 4 CPU seconds in 2.9 hours.
+**`grow -substep growth` leaks memory without bound** -- root cause now identified. Measured on cross45
+before diagnosis: ~400 GB consumed per 14 minutes of work across ~40 workers at ~21 GB RSS each. When
+memory runs out the pool does not crash, it **wedges**: the original cross45 attempt sat at strand 386
+holding 129 GB in the parent having burned 4 CPU seconds in 2.9 hours.
 
-This is left alone deliberately: fixing it means understanding the growth step's allocation pattern, which
-is a much larger change than a thin delta allows. It is handled operationally instead — see
-`prod/CROSSING-NOTES.md` for the batched runners that bound the exposure, and note that killing a pool can
-leave a truncated `.npz`, so strand files must be validated before meshing.
+*Cause* (`meta_grid.py:403-406`): `handle_temperature` inserts dict keys with
+`try: d[k] += 1 / except: d[k] = 1` inside an `@jit(nopython=True)` function. Every NEW key raises
+`KeyError`, and numba's runtime does not free memory on the exception unwind path -- a measured **80.2
+bytes per raised exception**, never returned. The function runs once per voxel per iteration (348 M times
+for one cross90 strand), so the leak tracks work done: **173.6 MB per M voxels**, about 2.4 TB over a full
+409-strand run. A 4-line membership test in its place cuts peak RSS from 15.3 GB to 1.81 GB with
+bit-identical output.
 
-Two further consequences of the same design, also unaddressed here: a from-scratch run hands the whole
-missing list to `meta_grid`, which allocates per strand before doing any work (409 strands wedged it at
-276 GB against 2 CPU seconds), and killing `meta_grid` leaves its pool children reparented to init still
-holding their allocations.
+*Two claims previously in this file were wrong and are corrected here.* `meta_grid` does NOT allocate per
+strand before doing work. And `n_cores` does not merely fail to control the worker count -- it is **never
+plumbed to the growth step at all**: `meta_grid.py:882` hardcodes `cpu_count()/2` (36 on this box) and
+`meta_grid` has no `-n_cores` option; only step 1's `grid_initialization.py` reads the config value.
+Batching the strand list to 12 helped because `n_pool` follows `len(inputs)`, so it ran 12 leaking workers
+instead of 36, and each batch was a fresh process that discarded the leak.
+
+*The wedge*, verified: `multiprocessing.Pool.map` never notices a SIGKILLed worker, so the parent blocks
+indefinitely at `meta_grid.py:916`. With no swap and `vm.overcommit_memory=0`, `np.zeros` succeeds
+virtually and the OOM killer strikes on page-touch, so `MemoryError` is never raised and the `try/except`
+around that allocation (`:703-707`) can never fire.
+
+Handled operationally for now -- see `prod/CROSSING-NOTES.md` for the batched runners. Killing a pool can
+leave a truncated `.npz`, so strand files must be validated before meshing; pool children are daemonic but
+daemon cleanup runs in the parent's `atexit`, so `SIGKILL`ing the parent orphans them, hence the `setsid`
+plus process-group kill in `grow_in_batches.sh`.
 
 ## Keeping up with upstream
 
