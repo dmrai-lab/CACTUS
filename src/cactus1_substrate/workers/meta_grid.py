@@ -47,6 +47,7 @@ import argparse
 file = None
 global_box_step = None
 global_iterations = None
+global_use_gpu = False
 part_number = None
 total_parts = None
 
@@ -57,6 +58,7 @@ def parse_arguments():
     parser.add_argument("-grid_size", type=float, help="step of metaball space")
     parser.add_argument("-iterations", type=int, help="iterations heat" , default = 5)
     parser.add_argument("-n_cores", type=int, help="worker processes; default keeps the historical cpu_count()//2", default = 0)
+    parser.add_argument("-gpu", action="store_true", help="run the heat propagation on a CUDA GPU (bit-identical; falls back to CPU if unavailable)")
     parser.add_argument("-batch_id", type=int, help="current batch working on" , default=0)
     parser.add_argument("-n_batchs", type=int, help="number of batches to split the runn" , default=1)
     parser.add_argument("-strand_id", type=str, help="strand id from the separated by commas eg 2,3,11" , default='-1')
@@ -747,7 +749,17 @@ def get_mesh_strand(selected_strand  ):
     # grid_temperature , grid_class = propagate_heat_iterations(1       , grid_temperature , grid_class , handle_temperature_cleaning , kernel_size=3)
     #save_nifty( selected_strand , "1clean" , grid_class , )
     print("propagating.... " , "|| ", selected_strand)
-    grid_temperature , grid_class = propagate_heat_iterations(maxIter , grid_temperature , grid_class , handle_temperature , kernel_size=3)
+    if global_use_gpu:
+        # Opt-in GPU path. Bit-identical to the CPU sweep (see core/heat_cuda.py for the quirks that has
+        # to reproduce); falls back with a warning rather than failing when there is no usable device.
+        from cactus1_substrate.core import heat_cuda
+        if heat_cuda.is_available():
+            grid_temperature , grid_class = heat_cuda.propagate_heat_iterations_cuda(maxIter , grid_temperature , grid_class , kernel_size=3)
+        else:
+            print("  -gpu requested but no CUDA device is available; using the CPU sweep")
+            grid_temperature , grid_class = propagate_heat_iterations(maxIter , grid_temperature , grid_class , handle_temperature , kernel_size=3)
+    else:
+        grid_temperature , grid_class = propagate_heat_iterations(maxIter , grid_temperature , grid_class , handle_temperature , kernel_size=3)
     print("propagated " , "|| ", selected_strand)
 
     #nib.Nifti1Image(grid_class, np.eye(4)).to_filename("1.nii.gz")
@@ -812,20 +824,22 @@ import multiprocessing
 from multiprocessing import get_context
 
 
-def _init_worker(box_step, iterations):
+def _init_worker(box_step, iterations, use_gpu=False):
     """Initializer for spawn Pool workers — sets globals in each child process."""
-    global global_box_step, global_iterations
+    global global_box_step, global_iterations, global_use_gpu
     global_box_step = box_step
     global_iterations = iterations
+    global_use_gpu = use_gpu
 
 
 def main():
     args = parse_arguments()
 
-    global file, global_box_step, global_iterations, part_number, total_parts
+    global file, global_box_step, global_iterations, part_number, total_parts, global_use_gpu
     file = args.file
     global_box_step = args.grid_size
     global_iterations = args.iterations
+    global_use_gpu = bool(args.gpu)
     part_number = args.batch_id
     total_parts = args.n_batchs
 
@@ -920,7 +934,7 @@ def main():
     # pool_obj =  get_context("spawn").Pool(n_pool)
     # res = pool_obj.map(get_mesh_strand, inputs)
 
-    pool_obj =  get_context("spawn").Pool(n_pool, initializer=_init_worker, initargs=(global_box_step, global_iterations))
+    pool_obj =  get_context("spawn").Pool(n_pool, initializer=_init_worker, initargs=(global_box_step, global_iterations, global_use_gpu))
     for result in tqdm.tqdm(pool_obj.map(get_mesh_strand, inputs), total=len(inputs)):
         aa=1
 
