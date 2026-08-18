@@ -104,6 +104,22 @@ def _build():
 _KERNEL = None
 
 
+def fits_on_device(grid_temperature, grid_class, margin=1.15):
+    """Will the four device arrays fit in free GPU memory? Never raises.
+
+    The kernel double-buffers, so it needs 2x the two grids, plus headroom. A caller that skips this
+    check gets a CUDA out-of-memory error instead of a clean fall back to the CPU sweep, which on a
+    smaller card is the common case rather than an edge one.
+    """
+    try:
+        from numba import cuda
+        need = int((grid_temperature.nbytes + grid_class.nbytes) * 2 * margin)
+        free, _total = cuda.current_context().get_memory_info()
+        return need <= free, need, free
+    except Exception:
+        return False, 0, 0
+
+
 def propagate_heat_iterations_cuda(maxIter, grid_temperature, grid_class, kernel_size=3):
     """Drop-in replacement for `meta_grid.propagate_heat_iterations`, on the GPU.
 
@@ -120,13 +136,18 @@ def propagate_heat_iterations_cuda(maxIter, grid_temperature, grid_class, kernel
     lenX = grid_temperature.shape[0]
     hi_slice = lenX - 2 - kernel_size // 2      # last slice the CPU sweep actually writes
 
+    # CUDA caps blocks per grid at 65535 in y and z. With the block shape below that allows 2**19 voxels
+    # per axis, far beyond anything this code produces, but fail clearly rather than silently truncating.
+    tpb = (4, 8, 8)
+    bpg = tuple((n + t - 1) // t for n, t in zip(grid_temperature.shape, tpb))
+    if bpg[1] > 65535 or bpg[2] > 65535:
+        raise ValueError(
+            f"grid {grid_temperature.shape} needs {bpg} blocks; CUDA allows at most 65535 in y and z")
+
     d_T_in = cuda.to_device(np.ascontiguousarray(grid_temperature))
     d_C_in = cuda.to_device(np.ascontiguousarray(grid_class))
     d_T_out = cuda.device_array_like(d_T_in)
     d_C_out = cuda.device_array_like(d_C_in)
-
-    tpb = (4, 8, 8)
-    bpg = tuple((n + t - 1) // t for n, t in zip(grid_temperature.shape, tpb))
 
     for _ in range(maxIter):
         # zero-filled output reproduces quirks 2 and 3 without a separate pass

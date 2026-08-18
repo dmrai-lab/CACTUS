@@ -753,8 +753,13 @@ def get_mesh_strand(selected_strand  ):
         # Opt-in GPU path. Bit-identical to the CPU sweep (see core/heat_cuda.py for the quirks that has
         # to reproduce); falls back with a warning rather than failing when there is no usable device.
         from cactus1_substrate.core import heat_cuda
-        if heat_cuda.is_available():
+        fits, need, free = heat_cuda.fits_on_device(grid_temperature, grid_class)
+        if heat_cuda.is_available() and fits:
             grid_temperature , grid_class = heat_cuda.propagate_heat_iterations_cuda(maxIter , grid_temperature , grid_class , kernel_size=3)
+        elif heat_cuda.is_available():
+            print(f"  -gpu: grid needs {need/1e9:.2f} GB on device but only {free/1e9:.2f} GB is free; "
+                  f"using the CPU sweep")
+            grid_temperature , grid_class = propagate_heat_iterations(maxIter , grid_temperature , grid_class , handle_temperature , kernel_size=3)
         else:
             print("  -gpu requested but no CUDA device is available; using the CPU sweep")
             grid_temperature , grid_class = propagate_heat_iterations(maxIter , grid_temperature , grid_class , handle_temperature , kernel_size=3)
