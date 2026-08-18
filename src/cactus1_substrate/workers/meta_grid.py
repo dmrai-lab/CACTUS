@@ -285,6 +285,14 @@ def fill_grid(grid_temperature ,grid_class ,strands  , bounding_box , new_box , 
                         p = p/box_step
                         x,y,z = int(p[0]) ,int(p[1]) ,int(p[2])
 
+                        # `is_inside_box` admits p == the box extent, and box_dim is ceil(extent/box_step),
+                        # so a sample exactly on the far face indexes one past the end whenever the extent
+                        # is an integer multiple of box_step. numba runs with bounds-checking off, so that
+                        # is a silent out-of-bounds write rather than an IndexError. Clamp instead.
+                        x = min(x, grid_class.shape[0] - 1)
+                        y = min(y, grid_class.shape[1] - 1)
+                        z = min(z, grid_class.shape[2] - 1)
+
                         grid_temperature[x][y][z] += 1000
                         grid_class[x][y][z] =  i+1 #1 if i== selected_strand else 2
 
