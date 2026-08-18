@@ -18,3 +18,16 @@ source_fibre_optimization/joint_fibre_optimizer
 .idea/
 *.swp
 .DS_Store
+
+# Local virtualenv and scratch
+.venv/
+work/
+
+# Generated substrates: prod/<name>/ holds meshes, pickles and grids (many GB).
+# The drivers, notes and top-level configs in prod/ ARE tracked; the run output is not.
+prod/*
+!prod/*.md
+!prod/*.sh
+!prod/*.py
+!prod/*.txt
+prod/*_radii.txt
